@@ -3,8 +3,8 @@ import { Tiktoken, getEncoding } from "js-tiktoken";
 import { FunctionDef, formatFunctionDefinitions } from "./functions";
 
 type Message = OpenAI.Chat.ChatCompletionMessageParam;
-type Function = OpenAI.Chat.ChatCompletionCreateParams.Function;
-type FunctionCall = OpenAI.Chat.ChatCompletionFunctionCallOption;
+type Tools = Array<OpenAI.ChatCompletionTool>;
+type ToolChoice = OpenAI.Chat.ChatCompletionToolChoiceOption;
 
 let encoder: Tiktoken | undefined;
 
@@ -17,19 +17,19 @@ let encoder: Tiktoken | undefined;
  */
 export function promptTokensEstimate({
   messages,
-  functions,
-  function_call,
+  tools,
+  tool_choice,
 }: {
   messages: Message[];
-  functions?: Function[];
-  function_call?: "none" | "auto" | FunctionCall;
+  tools?: Tools;
+  tool_choice?: ToolChoice;
 }): number {
   // It appears that if functions are present, the first system message is padded with a trailing newline. This
   // was inferred by trying lots of combinations of messages and functions and seeing what the token counts were.
   let paddedSystem = false;
   let tokens = messages
     .map((m) => {
-      if (m.role === "system" && functions && !paddedSystem) {
+      if (m.role === "system" && tool_choice && !paddedSystem) {
         m = { ...m, content: m.content + "\n" };
         paddedSystem = true;
       }
@@ -41,23 +41,33 @@ export function promptTokensEstimate({
   tokens += 3;
 
   // If there are functions, add the function definitions as they count towards token usage
-  if (functions) {
-    tokens += functionsTokensEstimate(functions as any as FunctionDef[]);
+  if (tools) {
+    const funcs = tools.map<FunctionDef>((v) => ({
+      name: v.function.name,
+      parameters: {
+        type: "object",
+        ...v.function.parameters,
+      },
+      description: v.function.description,
+    }));
+    tokens += functionsTokensEstimate(funcs);
   }
 
   // If there's a system message _and_ functions are present, subtract four tokens. I assume this is because
   // functions typically add a system message, but reuse the first one if it's already there. This offsets
   // the extra 9 tokens added by the function definitions.
-  if (functions && messages.find((m) => m.role === "system")) {
+  if (tools && messages.find((m) => m.role === "system")) {
     tokens -= 4;
   }
 
   // If function_call is 'none', add one token.
   // If it's a FunctionCall object, add 4 + the number of tokens in the function name.
   // If it's undefined or 'auto', don't add anything.
-  if (function_call && function_call !== "auto") {
+  if (tool_choice && tool_choice !== "auto") {
     tokens +=
-      function_call === "none" ? 1 : stringTokens(function_call.name) + 4;
+      tool_choice === "none"
+        ? 1
+        : stringTokens(tool_choice.function?.name!) + 4;
   }
 
   return tokens;
